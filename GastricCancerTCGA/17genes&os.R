@@ -41,3 +41,21 @@ rm(rep.df)
 if(all(!duplicated(cat.df$X_PATIENT))){
   os.anal.df <- cat.df[c(gene.list,'OS','OS.time')]
 }
+###load survival analysis packages
+library(survival)
+
+#multivariate cox analysis
+coxph(Surv(time = OS.time,event = OS)~.-OS-OS.time,data = os.anal.df)
+
+
+#univariate cox analysis
+
+uni.anal <- function(x){
+  fmt.str <- paste0('Surv(time = OS.time,event = OS)~',x)%>%
+    as.formula()
+  y <- coxph(fmt.str, data = os.anal.df)
+  return(y)
+}
+lapply(gene.list,uni.anal)
+
+
