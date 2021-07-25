@@ -1,5 +1,7 @@
+source('load_package.R')
 load('gastric_tcga_tmm.RData')
 rm(list=ls()[!ls()%in%c('tmm.hugo.df')])
+
 clin.df<-read.table('TCGA-STAD.survival.tsv',header = T)
 library(xlsx)
 library(tibble)
@@ -31,7 +33,7 @@ rm(list = ls()[!ls()%in%c('os.df','gene.list')])
 rep.df<-os.df
 groupby_median <- function(x){
   median_x <- median(x)
-  result <- ifelse(x>median_x,'high','low')
+  result <- ifelse(x<median_x,'low','high')
   return(result)
 }
 rep.df[gene.list] <- lapply(rep.df[gene.list],groupby_median)
@@ -45,17 +47,22 @@ if(all(!duplicated(cat.df$X_PATIENT))){
 library(survival)
 
 #multivariate cox analysis
-coxph(Surv(time = OS.time,event = OS)~.-OS-OS.time,data = os.anal.df)
 
-
+full.anal <- function(){
+  y <- coxph(Surv(time = OS.time,event = OS)~.-OS-OS.time,data = os.anal.df)%>%summary()
+  y <- cbind(y$coefficient, y$conf.int)
+  y <- y[,c(2,8,9,5),drop=F]
+  return(y)
+}
+mul.result <- full.anal()
 #univariate cox analysis
-
 uni.anal <- function(x){
   fmt.str <- paste0('Surv(time = OS.time,event = OS)~',x)%>%
     as.formula()
-  y <- coxph(fmt.str, data = os.anal.df)
+  y <- coxph(fmt.str, data = os.anal.df)%>%summary()
+  y <- cbind(y$coefficient, y$conf.int)
+  y <- y[1,c(2,8,9,5),drop=F]
   return(y)
 }
-lapply(gene.list,uni.anal)
-
-
+uni.result<-do.call(rbind,lapply(gene.list,uni.anal))
+result.table <- cbind(uni.result,mul.result)
