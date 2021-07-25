@@ -3,8 +3,6 @@ load('gastric_tcga_tmm.RData')
 rm(list=ls()[!ls()%in%c('tmm.hugo.df')])
 
 clin.df<-read.table('TCGA-STAD.survival.tsv',header = T)
-library(xlsx)
-library(tibble)
 gene.list<-xlsx::read.xlsx('17 genes(1).xlsx',sheetIndex = 1,header = F)%>%.$X1
 
 if(all(gene.list%in%tmm.hugo.df$hgnc_symbol)){
@@ -29,6 +27,8 @@ os.df%<>%filter(typecode%in%c('01A','01B'))
 ###clear for space
 rm(list = ls()[!ls()%in%c('os.df','gene.list')])
 
+
+
 ###median grouping
 rep.df<-os.df
 groupby_median <- function(x){
@@ -43,11 +43,20 @@ rm(rep.df)
 if(all(!duplicated(cat.df$X_PATIENT))){
   os.anal.df <- cat.df[c(gene.list,'OS','OS.time')]
 }
-###load survival analysis packages
-library(survival)
 
 #multivariate cox analysis
+seed <- 101
 
+x.mat <- os.anal.df[gene.list]%>%as.matrix()
+y.mat <- os.anal.df[c('OS.time','OS')]%>%as.matrix()
+surv <- Surv(time = os.anal.df$OS.time,event = os.anal.df$OS)
+
+fit <- glmnet(x.mat,surv,family = 'cox')
+set.seed(seed)
+cv.fit <- cv.glmnet(x.mat,surv,family = 'cox',nfolds = 10)
+cv.fit$lambda.min
+
+coef(fit,s = cv.fit$lambda.min)
 full.anal <- function(){
   y <- coxph(Surv(time = OS.time,event = OS)~.-OS-OS.time,data = os.anal.df)%>%summary()
   # y <- cbind(y$coefficient, y$conf.int)
