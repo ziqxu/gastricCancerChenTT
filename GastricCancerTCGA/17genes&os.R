@@ -50,9 +50,9 @@ library(survival)
 
 full.anal <- function(){
   y <- coxph(Surv(time = OS.time,event = OS)~.-OS-OS.time,data = os.anal.df)%>%summary()
-  # y <- cbind(y$coefficient, y$conf.int)
-  # y <- y[,c(1,2,8,9,5),drop=F]
-  y<-coefficients(y)
+  y <- cbind(y$coefficient, y$conf.int)
+  y <- y[,c(2,8,9,5),drop=F]
+  # y<-coefficients(y)
   return(y)
 }
 mul.result <- full.anal()
