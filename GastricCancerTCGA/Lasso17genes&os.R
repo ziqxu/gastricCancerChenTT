@@ -60,11 +60,11 @@ set.seed(seed)
 cv.fit <- cv.glmnet(x.mat,surv,family = 'cox',nfolds = 10)
 cv.fit$lambda.min
 
-update.list <- coef(fit,s = cv.fit$lambda.min)%>%as.matrix()%>%as.data.frame%>%filter(`1`!=0)%>%rownames()
+wt.coef <- coef(fit,s = cv.fit$lambda.min)%>%as.matrix()%>%as.data.frame%>%filter(`1`!=0)%>%as.matrix()
 #update.list <- c("ADAM12","CDH19","SLC5A7","SHOX2","C1QL1","RHPN2","APLN","MNX1","IGF2BP1","HMGB3")
-#update.list <- c("ADAM12","SHOX2","MNX1")
+update.list <- rownames(wt.coef)
 fml<-paste0('surv~',paste0(update.list,collapse = '+'))%>%as.formula()
-wt.coef<-coef(coxph(fml,data = os.anal.df[train.set,]))%>%as.matrix()
+#wt.coef<-coef(coxph(fml,data = os.anal.df[train.set,]))%>%as.matrix()
 risk.score<-x.mat[,update.list]%*%wt.coef
 median(risk.score)
 
@@ -117,22 +117,142 @@ uni.anal('score.group',train.df)
 pheno<-readr::read_tsv('TCGA-STAD.GDC_phenotype.tsv')%>%
   filter(submitter_id.samples%in%rownames(train.df))%>%
   column_to_rownames(var='submitter_id.samples')
-mulcox.df<-merge(train.df,pheno, by = 0)
-mulcox.list <- c('score.group',)
 
-fml<-paste0('Surv(time = OS.time,event = OS)~',paste0('score',collapse = '+'))%>%as.formula()
-train.df$score<-as.numeric(train.df$score)
-coxm<-cph(fml,data = train.df,x=T,y=T,surv = T)
+mulcox.list <- c('score.group','T_group','N_group','M_group','Age','Sex')
+mulcox.df<-merge(train.df,pheno, by = 0)%>%
+  mutate(M_group = as.factor(pathologic_M)%>%relevel(ref='M0'))%>%
+  mutate(T_group = ifelse(grepl('T1',pathologic_T)|grepl('T2',pathologic_T),'≤T2',ifelse(pathologic_T=='TX','TX','>T2')))%>%
+  mutate(N_group = ifelse(grepl('N0',pathologic_N),'N0',ifelse(pathologic_N=='NX','NX','>N0')))%>%
+  mutate(Age = ifelse(age_at_index.demographic>60,'>60','≤60'))%>%
+  mutate(T_group=as.factor(T_group)%>%relevel(ref='≤T2'))%>%
+  mutate(N_group=as.factor(N_group)%>%relevel(ref='N0'))%>%
+  mutate(Sex = as.factor(gender.demographic))%>%
+  .[c(mulcox.list,'OS.time','OS')]
+# table(mulcox.df$pathologic_M)
+# table(mulcox.df$M_group)
+# table(mulcox.df$pathologic_T)
+# table(mulcox.df$T_group)
+# table(mulcox.df$pathologic_N)
+# table(mulcox.df$N_group)
+
+
+fml<-paste0('Surv(time = OS.time,event = OS)~',paste0(mulcox.list,collapse = '+'))%>%as.formula()
+mulcox.df$score<-as.numeric(mulcox.df$score)
+coxm<-cph(fml,data = mulcox.df,x=T,y=T,surv = T)
 med<-Quantile(coxm)
 surv<-Survival(coxm)
 surv1<-function(x) surv(times = 30*12,lp = x)
 surv2<-function(x) surv(times = 30*36,lp = x)
 surv3<-function(x) surv(times = 30*60,lp = x)
-dd <- datadist(train.df)
+dd <- datadist(mulcox.df)
 options(datadist=dd)
 nom <- nomogram(coxm,fun=list(surv1,surv2,surv3),lp=F,funlabel = c("1-year OS","3-year OS",'5-year OS'))
 plot(nom,xfrac = 0.3)
 
+###DCA
+set.seed(seed)
+cal<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 365,m = 50,B = 100)
+cal2<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 30*36,m = 50,B = 100)
+cal3<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 1800,m = 50,B = 100)
+pdf(file='output/one_year_DCA.pdf',onefile = T)
+{
+plot(cal,lwd=2,lty=1,errbar.col=c(rgb(0,118,192,maxColorValue = 255)),
+     xlim=c(0.1,1),ylim=c(0.1,1),
+     xlab='Nomogram-predition of 1-year OS probablity',
+     ylab="Actual OS probability",
+     col=c(192,98,83,maxColorValue=255)
+     )
+lines(cal)
+abline(0,1)
+}
+dev.off()
+
+pdf(file='output/two_year_DCA.pdf',onefile = T)
+{
+  plot(cal2,lwd=2,lty=1,errbar.col=c(rgb(173,118,192,maxColorValue = 255)),
+       xlim=c(0.1,1),ylim=c(0.1,1),
+       xlab='Nomogram-predition of three-year OS probablity',
+       ylab="Actual OS probability",
+       col=c(192,98,83,maxColorValue=255)
+  )
+  lines(cal)
+  abline(0,1)
+}
+dev.off()
+
+pdf(file='output/5_year_DCA.pdf',onefile = T)
+{
+  plot(cal3,lwd=2,lty=1,errbar.col=c(rgb(56,118,192,maxColorValue = 255)),
+       xlim=c(0.1,1),ylim=c(0.1,1),
+       xlab='Nomogram-predition of 5-year OS probablity',
+       ylab="Actual OS probability",
+       col=c(192,98,83,maxColorValue=255)
+  )
+  lines(cal)
+  abline(0,1)
+}
+dev.off()
+
+mul.anal <- function(x,df){
+  surv<-Surv(time = df$OS.time,event = df$OS)
+  fml<-paste0('surv~',paste0(x,collapse = '+'))%>%as.formula()
+  y <- coxph(fml,data = df)%>%summary()
+  y <- cbind(y$coefficient, y$conf.int)
+  y <- y[,c(1,2,8,9,5),drop=F]
+  # y<-coefficients(y)
+  return(y)
+}
+mul.result<-mul.anal(mulcox.list,mulcox.df)
+
 ####print results
 dir.create('output')
 write.csv(uni.result,file = 'output/univariate_cox.csv')
+write.csv(mul.result,file = 'output/mulvariate_cox.csv')
+pdf(file = 'output/nomogram.pdf',onefile = T,width = 10,height = 7)
+plot(nom,xfrac = 0.3)
+dev.off()
+
+#### KM-plot
+km.plot <- function(df,x){
+  {
+    fml<-as.formula(paste0('Surv(OS.time,OS)~',x))
+    
+    data.survdiff <- survdiff(fml, data = df)
+    smry = summary(coxph(fml, data = df,method = 'efron'))
+    
+    p.val = 1 - pchisq(data.survdiff$chisq, length(data.survdiff$n) - 1)
+    # smry = summary(coxph(fml, data = df,method = 'efron'))
+    HR = signif(smry$coef[2], digits=2)
+    up95 = smry$conf.int[,"upper .95"]
+    low95 = smry$conf.int[,"lower .95"]
+    HR <- paste("HR:", round(HR,2), sep = "")
+    CI <- paste("95%CI: ", paste(round(low95,2),round(up95,2), sep = ifelse(low95>1,'*-','-')), sep = "")
+    HRCI <- paste0(HR,"(",CI,")")
+    colorset<-c('#0909a0','#7a0505')
+    
+  }
+  p <- ggsurvplot(fit = surv_fit(fml,data = df),
+                  palette = colorset,
+                  pval=T,
+                  #pval=paste(HRCI,pval = ifelse(p.val < 0.001, "p < 0.001", paste("p = ",round(p.val,4), sep = "")), sep = "\n"),
+                  pval.method = T,
+                  #    pval.coord=c(max(na.omit(df$OS_MONTHS))*0.6,0.8),
+                  risk.table = T,
+                  title=paste0('KM-plot of Risk Score')
+  )+labs(x='Days')
+  
+  p$table <- p$table + theme(axis.line = element_blank(),
+                             axis.ticks = element_blank(),
+                             axis.title.x = element_blank(),
+                             axis.title.y = element_blank(),
+                             axis.text.x = element_blank(),
+  )
+  
+  p
+}
+pdf(file='output/kmplot_tcga.pdf',onefile = T,width = 14,height = 10)
+print(km.plot(mulcox.df,x = 'score.group'))
+dev.off()
+
+#### 
+save(wt.coef,file = 'weight.coeff.RData')
