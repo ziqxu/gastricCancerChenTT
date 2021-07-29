@@ -69,7 +69,9 @@ risk.score<-x.mat[,update.list]%*%wt.coef
 median(risk.score)
 
 train.df <- os.anal.df[train.set,]
-train.df$score <- risk.score
+if(all(rownames(train.df)==rownames(risk.score))){
+train.df$score <- risk.score[,1]
+}
 ####################
 full.anal <- function(x){
   surv<-Surv(time = os.anal.df$OS.time,event = os.anal.df$OS)
@@ -89,13 +91,13 @@ uni.anal <- function(x,df){
   fmt.str <- paste0('Surv(time = OS.time,event = OS)~',x)%>%
     as.formula()
   y <- coxph(fmt.str, data = df)%>%summary()
-  y <- cbind(y$coefficient, y$conf.int,concordance=y$concordance[1],c.se=y$concordance[2])
-  y <- y[1,c(2,8,9,5,10,11),drop=F]
-  
+  y <- cbind(y$coefficient, y$conf.int,concordance=y$concordance[1],c.se=y$concordance[2],n=y$n)
+  y <- y[1:nrow(y),c(2,8,9,5,10,11,12),drop=F]
+
   return(y)
 }
 
-uni.anal('score',train.df)
+uni.anal('score',train.df)->test
 uni.result<-do.call(rbind,lapply(gene.list,function(x)uni.anal(x,train.df)))
 # result.table <- cbind(uni.result,mul.result)
 train.df$score.group<-ifelse(train.df$score>=median(risk.score),'high',"low")%>%
@@ -118,16 +120,21 @@ pheno<-readr::read_tsv('TCGA-STAD.GDC_phenotype.tsv')%>%
   filter(submitter_id.samples%in%rownames(train.df))%>%
   column_to_rownames(var='submitter_id.samples')
 
-mulcox.list <- c('score.group','T_group','N_group','M_group','Age','Sex')
+mulcox.list <- c('score.group','T_group','N_group','M_group','Age')
 mulcox.df<-merge(train.df,pheno, by = 0)%>%
   mutate(M_group = as.factor(pathologic_M)%>%relevel(ref='M0'))%>%
   mutate(T_group = ifelse(grepl('T1',pathologic_T)|grepl('T2',pathologic_T),'≤T2',ifelse(pathologic_T=='TX','TX','>T2')))%>%
   mutate(N_group = ifelse(grepl('N0',pathologic_N),'N0',ifelse(pathologic_N=='NX','NX','>N0')))%>%
   mutate(Age = ifelse(age_at_index.demographic>60,'>60','≤60'))%>%
+  mutate(Age=as.factor(Age)%>%relevel(ref='≤60'))%>%
   mutate(T_group=as.factor(T_group)%>%relevel(ref='≤T2'))%>%
   mutate(N_group=as.factor(N_group)%>%relevel(ref='N0'))%>%
   mutate(Sex = as.factor(gender.demographic))%>%
-  .[c(mulcox.list,'OS.time','OS')]
+  .[c(mulcox.list,'OS.time','OS')]%>%
+  na_if('NX')%>%
+  na_if('TX')%>%
+  na_if('MX')%>%
+  droplevels()
 # table(mulcox.df$pathologic_M)
 # table(mulcox.df$M_group)
 # table(mulcox.df$pathologic_T)
@@ -149,50 +156,84 @@ options(datadist=dd)
 nom <- nomogram(coxm,fun=list(surv1,surv2,surv3),lp=F,funlabel = c("1-year OS","3-year OS",'5-year OS'))
 plot(nom,xfrac = 0.3)
 
-###DCA
+#### DCA ####
+require(ggsci)
+cols<-ggsci::pal_jama(palette = c("default"))(3)
+
+coxm<-cph(fml,data = mulcox.df,x=T,y=T,surv = T,time.inc=365)
 set.seed(seed)
-cal<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 365,m = 50,B = 100)
-cal2<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 30*36,m = 50,B = 100)
-cal3<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 1800,m = 50,B = 100)
-pdf(file='output/one_year_DCA.pdf',onefile = T)
-{
-plot(cal,lwd=2,lty=1,errbar.col=c(rgb(0,118,192,maxColorValue = 255)),
-     xlim=c(0.1,1),ylim=c(0.1,1),
-     xlab='Nomogram-predition of 1-year OS probablity',
-     ylab="Actual OS probability",
-     col=c(192,98,83,maxColorValue=255)
-     )
-lines(cal)
-abline(0,1)
-}
-dev.off()
+cal<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 365,m = 100,B = 100)
 
-pdf(file='output/two_year_DCA.pdf',onefile = T)
+coxm<-cph(fml,data = mulcox.df,x=T,y=T,surv = T,time.inc =365*3)
+set.seed(seed)
+cal2<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 365*3,m = 100,B = 100)
+
+coxm<-cph(fml,data = mulcox.df,x=T,y=T,surv = T,time.inc =365*5)
+set.seed(seed)
+cal3<-calibrate(coxm,cmethod = 'KM',method = 'boot',u = 365*5,m = 100,B = 100)
+pdf(file='output/135_year_DCA.pdf',onefile = T)
 {
-  plot(cal2,lwd=2,lty=1,errbar.col=c(rgb(173,118,192,maxColorValue = 255)),
-       xlim=c(0.1,1),ylim=c(0.1,1),
-       xlab='Nomogram-predition of three-year OS probablity',
+  plot(cal,lwd=2,lty=1,errbar.col=cols[1],
+       xlim=c(0.1,1),ylim=c(0.1,1), legend=F, subtitles=F,
+       xlab='Nomogram-predicted OS probability',
        ylab="Actual OS probability",
-       col=c(192,98,83,maxColorValue=255)
-  )
-  lines(cal)
-  abline(0,1)
+       col=cols[1]
+       )
+    lines(cal[,c('mean.predicted','KM')],col=cols[1])
+    par(new=TRUE)
+    plot(cal2,lwd=2,lty=1,errbar.col=cols[2],
+         xlim=c(0.1,1),ylim=c(0.1,1),legend=F, subtitles=F,
+         xlab='',
+         ylab="",
+         col=cols[2]
+    )
+    lines(cal2[,c('mean.predicted','KM')],col=cols[2])
+    par(new=T)
+    plot(cal3,lwd=2,lty=1,errbar.col=cols[3],legend=F, subtitles=F,
+         xlim=c(0.1,1),ylim=c(0.1,1),
+         xlab='',
+         ylab="",
+         col=cols[3]
+    )
+    lines(cal3[,c('mean.predicted','KM')],col=cols[3])
+    abline(0,1,lty=2,col='gray')
+  # lines(cal[,c('mean.predicted','KM')])
+    abline(0,1,lty=2)
+    legend(0.85,0.3,c(paste("1 year"),
+                   paste("3 year"),
+                   paste("5 year")),
+         x.intersp=1, y.intersp=0.8,
+         lty= 1 ,lwd= 2,col=cols,
+         bty = "n",# bty框的类型
+         seg.len=1,cex=0.8)
 }
 dev.off()
-
-pdf(file='output/5_year_DCA.pdf',onefile = T)
-{
-  plot(cal3,lwd=2,lty=1,errbar.col=c(rgb(56,118,192,maxColorValue = 255)),
-       xlim=c(0.1,1),ylim=c(0.1,1),
-       xlab='Nomogram-predition of 5-year OS probablity',
-       ylab="Actual OS probability",
-       col=c(192,98,83,maxColorValue=255)
-  )
-  lines(cal)
-  abline(0,1)
-}
-dev.off()
-
+# pdf(file='output/two_year_DCA.pdf',onefile = T)
+# {
+#   plot(cal2,lwd=2,lty=1,errbar.col=c(rgb(173,118,192,maxColorValue = 255)),
+#        xlim=c(0.1,1),ylim=c(0.1,1),
+#        xlab='Nomogram-predition of three-year OS probablity',
+#        ylab="Actual OS probability",
+#        col=c(192,98,83,maxColorValue=255)
+#   )
+#   
+#   abline(0,1,lty=2)
+# }
+# dev.off()
+# 
+# pdf(file='output/5_year_DCA.pdf',onefile = T)
+# {
+#   plot(cal3,lwd=2,lty=1,errbar.col=c(rgb(56,118,192,maxColorValue = 255)),
+#        xlim=c(0.1,1),ylim=c(0.1,1),
+#        xlab='Nomogram-predition of 5-year OS probablity',
+#        ylab="Actual OS probability",
+#        col=c(192,98,83,maxColorValue=255)
+#   )
+#   lines(cal3[,c('mean.predicted','KM')])
+#   abline(0,1,lty=2)
+# }
+# dev.off()
+####cox ####
 mul.anal <- function(x,df){
   surv<-Surv(time = df$OS.time,event = df$OS)
   fml<-paste0('surv~',paste0(x,collapse = '+'))%>%as.formula()
@@ -203,7 +244,36 @@ mul.anal <- function(x,df){
   return(y)
 }
 mul.result<-mul.anal(mulcox.list,mulcox.df)
+coxph(fml,data = mulcox.df)%>%summary()%>%.$concordance
 
+uni.result<-do.call(rbind,lapply(mulcox.list,function(x)uni.anal(x,mulcox.df)))
+
+#### AUC ####
+require(ggsci)
+cols<-ggsci::pal_jama(palette = c("default"))(3)
+
+auc.df <- train.df[c('score','OS','OS.time')]
+sroc.score<-survivalROC(Stime = train.df$OS.time,status = train.df$OS,marker = train.df$score, predict.time = 365,method = 'KM',)
+sroc.score3<-survivalROC(Stime = train.df$OS.time,status = train.df$OS,marker = train.df$score, predict.time = 365*3,method = 'KM',)
+sroc.score5<-survivalROC(Stime = train.df$OS.time,status = train.df$OS,marker = train.df$score, predict.time = 365*5,method = 'KM',)
+
+dir.create('output')
+pdf('output/TCGA_riskscore_AUC.pdf',onefile = T,width = 6,height = 6)
+plot(sroc.score$FP,sroc.score$TP,type="l", xlim=c(0,1), ylim=c(0,1),col=cols[1],   
+     xlab=paste( "FP", "\n", "AUC = ",round(sroc.score$AUC,3)), 
+     ylab="TP",main="Risk score, Method = KM \n Year = 1")
+lines(sroc.score3$FP,sroc.score3$TP,type="l", xlim=c(0,1), ylim=c(0,1),col=cols[2])
+lines(sroc.score5$FP,sroc.score5$TP,type="l", xlim=c(0,1), ylim=c(0,1),col=cols[3])
+abline(0,1,lty=2,col='gray')
+legend(0.6,0.2,c(paste("1 year AUC =",round(sroc.score$AUC,3)),
+                 paste("3 year AUC =",round(sroc.score3$AUC,3)),
+                 paste("5 year AUC =",round(sroc.score5$AUC,3))),
+       x.intersp=1, y.intersp=0.8,
+       lty= 1 ,lwd= 2,col=cols,
+       bty = "n",# bty框的类型
+       seg.len=1,cex=0.8)#
+
+dev.off()
 ####print results
 dir.create('output')
 write.csv(uni.result,file = 'output/univariate_cox.csv')
@@ -250,7 +320,7 @@ km.plot <- function(df,x){
   
   p
 }
-pdf(file='output/kmplot_tcga.pdf',onefile = T,width = 14,height = 10)
+pdf(file='output/kmplot_tcga.pdf',onefile = T,width = 8,height = 6)
 print(km.plot(mulcox.df,x = 'score.group'))
 dev.off()
 
